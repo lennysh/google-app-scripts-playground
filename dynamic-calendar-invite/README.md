@@ -57,3 +57,11 @@ Edit the date math and `candidateHours` in `Code.gs` if your meeting is not a Tu
 - FreeBusy accuracy depends on guests sharing free/busy (typical for Workspace domains).
 - If multiple events match the search, the first result is used.
 - Project timezone in the manifest is `America/New_York`; change it if your “wall clock” hours should differ.
+
+### Recommendation: show the series as Free
+
+Mark the target recurring event (or series) as **Free** / transparent in Calendar — not Busy.
+
+`Calendar.Freebusy` only returns opaque busy intervals. It does not include event ids or titles, so the script cannot reliably ignore “this same meeting” when scoring slots. If the series is Busy, guests who already have the upcoming occurrence look conflicted in the **current** hour, which skews the pick toward other candidates.
+
+Showing the meeting as Free keeps it visible on calendars and in invites, but FreeBusy no longer treats it as a conflict—so availability checks reflect everyone else’s real meetings. (Tradeoff: other FreeBusy-based tools also won’t see this series as blocking.)
