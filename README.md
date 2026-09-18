@@ -10,6 +10,7 @@ Each folder is a standalone script you can paste into a new Apps Script project 
 |---------|---------|
 | [shared-cal-invite-sync](./shared-cal-invite-sync/) | Mirror selected events from shared calendars onto your primary calendar |
 | [dynamic-calendar-invite](./dynamic-calendar-invite/) | Pick a low-conflict time slot for a shared-calendar event using FreeBusy |
+| [calendar-label-by-name](./calendar-label-by-name/) | Assign Calendar Labels on the primary calendar by matching event titles |
 
 ## Quick start
 
