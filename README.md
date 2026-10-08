@@ -12,6 +12,7 @@ Each folder is a standalone script you can paste into a new Apps Script project 
 | [dynamic-calendar-invite](./dynamic-calendar-invite/) | Pick a low-conflict time slot for a shared-calendar event using FreeBusy |
 | [calendar-label-by-name](./calendar-label-by-name/) | Assign Calendar Labels on the primary calendar by matching event titles |
 | [meeting-notes-to-email-draft-in-word-format](./meeting-notes-to-email-draft-in-word-format/) | Export Gemini Meet notes to Word and draft/send email by Calendar attendee |
+| [md-to-doc-converter](./md-to-doc-converter/) | Convert Drive-folder Markdown (with `attachments/` images) into Google Docs |
 
 ## Quick start
 
