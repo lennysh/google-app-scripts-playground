@@ -1,42 +1,44 @@
 /**
  * Convert Markdown files in a Drive folder into Google Docs.
  *
+ * Uses Drive’s native Markdown → Google Doc import (same as “Open with
+ * Google Docs”), then embeds images from attachments/ by basename.
+ *
  * Expected layout under FOLDER_ID:
  *   - *.md files at the folder root
  *   - attachments/ — image files referenced by Markdown image syntax
  *
- * Live mode creates a Doc per .md file, moves it into the source folder,
- * and archives the original Markdown under Archived_MD_Files/.
+ * Live mode creates a Doc per .md file, fixes images, moves the Doc into the
+ * source folder (via parents on copy), and archives the .md under
+ * Archived_MD_Files/.
+ *
+ * Requires Advanced Google Service "Drive API" (Drive) v3 — see appsscript.js.
  */
 
 // --- CONFIGURATION ---
-// Set to true to inspect files and test image paths without making any changes.
-// Set to false to run the actual conversion, create Docs, and archive .md files.
 const DRY_RUN = true;
 
 // Drive folder ID that contains the .md files (and optional attachments/ subfolder).
-// From Drive: open the folder → copy the ID from the URL (.../folders/<FOLDER_ID>).
 const FOLDER_ID = 'YOUR_FOLDER_ID_HERE';
 
 /**
- * Scan FOLDER_ID for .md files, resolve images under attachments/, then either
- * log a dry-run summary or convert each file to a Google Doc.
+ * Scan FOLDER_ID for .md files, dry-run image stats, or convert via Drive + fix images.
  */
 function convertMdToDocsWithImages() {
   const sourceFolder = DriveApp.getFolderById(FOLDER_ID);
 
-  // Images are looked up by basename only (path prefixes in Markdown are ignored).
   const attachmentFolders = sourceFolder.getFoldersByName('attachments');
   const attachmentsFolder = attachmentFolders.hasNext() ? attachmentFolders.next() : null;
 
-  // Created on first live run when at least one .md is converted.
   const archiveFolderName = 'Archived_MD_Files';
   const archiveFolders = sourceFolder.getFoldersByName(archiveFolderName);
   let archiveFolder = archiveFolders.hasNext() ? archiveFolders.next() : null;
 
   const files = sourceFolder.getFiles();
 
-  console.log(`--- STARTING ${DRY_RUN ? '[DRY RUN MODE - No changes will be made]' : '[LIVE CONVERSION MODE]'} ---`);
+  console.log(
+    `--- STARTING ${DRY_RUN ? '[DRY RUN MODE - No changes will be made]' : '[LIVE CONVERSION MODE]'} ---`
+  );
 
   if (!attachmentsFolder) {
     console.warn('Warning: No "attachments" subfolder was found in the target directory.');
@@ -46,101 +48,229 @@ function convertMdToDocsWithImages() {
     const file = files.next();
     const fileName = file.getName();
 
-    if (fileName.toLowerCase().endsWith('.md')) {
-      const docName = fileName.replace(/\.md$/i, '');
-      const text = file.getBlob().getDataAsString();
-      const lines = text.split('\n');
+    if (!fileName.toLowerCase().endsWith('.md')) continue;
 
-      let totalImages = 0;
-      let foundImages = 0;
-      let missingImages = 0;
-      const missingList = [];
+    const docName = fileName.replace(/\.md$/i, '');
+    const mdText = file.getBlob().getDataAsString();
+    const refs = extractImageRefs(mdText);
+    const imageStats = summarizeImageRefs(refs, attachmentsFolder);
 
-      // Preview pass: count image refs and whether each basename exists in attachments/.
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trimEnd();
-        const imageMatch = line.match(/!\[(.*?)\]\((.*?)\)/);
+    const missingDetails =
+      imageStats.missingList.length > 0
+        ? ` | Missing: [${imageStats.missingList.join(', ')}]`
+        : '';
 
-        if (imageMatch) {
-          totalImages++;
-          const imagePath = imageMatch[2];
+    console.log(
+      `${DRY_RUN ? '[DRY RUN] Would convert' : 'Converting'}: "${fileName}" ` +
+        `-> Images ${imageStats.found}/${imageStats.total}` +
+        (imageStats.missing > 0 ? ` (missing ${imageStats.missing})` : '') +
+        missingDetails
+    );
 
-          // Basename only; decode %20; strip #anchors and ?queries.
-          let imageName = imagePath.split('/').pop().split('#')[0].split('?')[0];
-          try {
-            imageName = decodeURIComponent(imageName);
-          } catch (e) {
-            // Keep original name if decoding fails
-          }
+    if (DRY_RUN) continue;
 
-          if (attachmentsFolder && attachmentsFolder.getFilesByName(imageName).hasNext()) {
-            foundImages++;
-          } else {
-            missingImages++;
-            missingList.push(imageName);
-          }
-        }
-      }
+    // Native MD → Google Doc (same importer as “Open with Google Docs”).
+    const copied = Drive.Files.copy(
+      {
+        name: docName,
+        mimeType: MimeType.GOOGLE_DOCS,
+        parents: [FOLDER_ID],
+      },
+      file.getId(),
+      { supportsAllDrives: true }
+    );
 
-      const missingDetails = missingList.length > 0 ? ` | Missing files: [${missingList.join(', ')}]` : '';
-      console.log(
-        `${DRY_RUN ? '[DRY RUN] Would convert' : 'Converting'}: "${fileName}" ` +
-        `-> Images Total: ${totalImages} | Found: ${foundImages} | Missing: ${missingImages}${missingDetails}`
-      );
+    fixImagesInDoc(copied.id, mdText, attachmentsFolder);
 
-      if (!DRY_RUN) {
-        const newDoc = DocumentApp.create(docName);
-        const body = newDoc.getBody();
-        body.clear();
+    if (!archiveFolder) {
+      archiveFolder = sourceFolder.createFolder(archiveFolderName);
+    }
+    file.moveTo(archiveFolder);
+  }
 
-        for (let i = 0; i < lines.length; i++) {
-          let line = lines[i].trimEnd();
-          const imageMatch = line.match(/!\[(.*?)\]\((.*?)\)/);
+  console.log(
+    `--- FINISHED ${DRY_RUN ? '[DRY RUN MODE]' : '[LIVE CONVERSION MODE]'} ---`
+  );
+}
 
-          if (imageMatch) {
-            const imagePath = imageMatch[2];
-            let imageName = imagePath.split('/').pop().split('#')[0].split('?')[0];
-            try {
-              imageName = decodeURIComponent(imageName);
-            } catch (e) {}
+/**
+ * Parse all ![alt](path) references from Markdown in document order.
+ */
+function extractImageRefs(mdText) {
+  const refs = [];
+  const re = /!\[(.*?)\]\((.*?)\)/g;
+  let m;
+  while ((m = re.exec(mdText)) !== null) {
+    refs.push({
+      alt: m[1],
+      path: m[2],
+      basename: basenameFromImagePath(m[2]),
+    });
+  }
+  return refs;
+}
 
-            if (attachmentsFolder) {
-              const imgFiles = attachmentsFolder.getFilesByName(imageName);
-              if (imgFiles.hasNext()) {
-                const imgBlob = imgFiles.next().getBlob();
-                body.appendImage(imgBlob);
-              } else {
-                body.appendParagraph(`[Image missing: ${imageName}]`);
-              }
-            } else {
-              body.appendParagraph(`[Attachments folder not found for: ${imageName}]`);
-            }
-          }
-          // Basic Markdown headings only (# / ## / ###); other lines become plain paragraphs.
-          else if (line.startsWith('# ')) {
-            body.appendParagraph(line.substring(2)).setHeading(DocumentApp.ParagraphHeading.HEADING1);
-          } else if (line.startsWith('## ')) {
-            body.appendParagraph(line.substring(3)).setHeading(DocumentApp.ParagraphHeading.HEADING2);
-          } else if (line.startsWith('### ')) {
-            body.appendParagraph(line.substring(4)).setHeading(DocumentApp.ParagraphHeading.HEADING3);
-          } else {
-            body.appendParagraph(line);
-          }
-        }
+function summarizeImageRefs(refs, attachmentsFolder) {
+  let found = 0;
+  let missing = 0;
+  const missingList = [];
 
-        newDoc.saveAndClose();
-
-        // DocumentApp.create() lands in Drive root; move into the source folder.
-        const docFile = DriveApp.getFileById(newDoc.getId());
-        docFile.moveTo(sourceFolder);
-
-        if (!archiveFolder) {
-          archiveFolder = sourceFolder.createFolder(archiveFolderName);
-        }
-        file.moveTo(archiveFolder);
-      }
+  for (let i = 0; i < refs.length; i++) {
+    const name = refs[i].basename;
+    if (attachmentsFolder && attachmentsFolder.getFilesByName(name).hasNext()) {
+      found++;
+    } else {
+      missing++;
+      missingList.push(name);
     }
   }
 
-  console.log(`--- FINISHED ${DRY_RUN ? '[DRY RUN MODE]' : '[LIVE CONVERSION MODE]'} ---`);
+  return {
+    total: refs.length,
+    found: found,
+    missing: missing,
+    missingList: missingList,
+  };
+}
+
+function basenameFromImagePath(imagePath) {
+  let imageName = String(imagePath).split('/').pop().split('#')[0].split('?')[0];
+  try {
+    imageName = decodeURIComponent(imageName);
+  } catch (e) {
+    // keep original
+  }
+  return imageName;
+}
+
+function getAttachmentBlob(attachmentsFolder, basename) {
+  if (!attachmentsFolder) return null;
+  const files = attachmentsFolder.getFilesByName(basename);
+  if (!files.hasNext()) return null;
+  return files.next().getBlob();
+}
+
+/**
+ * After native import, embed attachments/ images:
+ * 1) Replace inline image placeholders in document order (matched to MD refs).
+ * 2) Replace any leftover ![alt](path) text with embedded images.
+ */
+function fixImagesInDoc(docId, mdText, attachmentsFolder) {
+  const refs = extractImageRefs(mdText);
+  if (refs.length === 0) return;
+
+  const doc = DocumentApp.openById(docId);
+  const body = doc.getBody();
+
+  // Snapshot import leftovers before we insert any new images.
+  const importImages = body.getImages();
+  if (importImages.length > 0) {
+    replaceInlineImagesInOrder(importImages, refs, attachmentsFolder);
+  }
+
+  replaceMarkdownImageSyntax(body, attachmentsFolder);
+
+  doc.saveAndClose();
+}
+
+/**
+ * Replace existing InlineImages (typically broken after MD import) with
+ * attachment blobs, matched by document order to MD ![ ]( ) refs.
+ */
+function replaceInlineImagesInOrder(images, refs, attachmentsFolder) {
+  const count = Math.min(images.length, refs.length);
+
+  // Bottom-up so sibling indexes stay valid while removing/inserting.
+  for (let i = count - 1; i >= 0; i--) {
+    const img = images[i];
+    const ref = refs[i];
+    const blob = getAttachmentBlob(attachmentsFolder, ref.basename);
+    const parent = img.getParent();
+    if (!parent) continue;
+
+    const childIndex = parent.getChildIndex(img);
+    img.removeFromParent();
+
+    if (blob) {
+      insertInlineImage(parent, childIndex, blob);
+    } else {
+      insertPlainText(parent, childIndex, `[Image missing: ${ref.basename}]`);
+    }
+  }
+
+  if (images.length > refs.length) {
+    console.warn(
+      `Doc has ${images.length} inline images but MD has ${refs.length} refs; extras left unchanged`
+    );
+  }
+}
+
+/**
+ * Find leftover Markdown image syntax and replace each with an embedded image.
+ */
+function replaceMarkdownImageSyntax(body, attachmentsFolder) {
+  const pattern = '!\\[[^\\]]*\\]\\([^\\)]+\\)';
+  let found = body.findText(pattern);
+
+  while (found) {
+    const el = found.getElement().asText();
+    const start = found.getStartOffset();
+    const end = found.getEndOffsetInclusive();
+    const matchStr = el.getText().substring(start, end + 1);
+    const m = matchStr.match(/!\[(.*?)\]\((.*?)\)/);
+
+    if (!m) {
+      found = body.findText(pattern, found);
+      continue;
+    }
+
+    const basename = basenameFromImagePath(m[2]);
+    const blob = getAttachmentBlob(attachmentsFolder, basename);
+    const parent = el.getParent();
+    const textIdx = parent ? parent.getChildIndex(el) : 0;
+
+    el.deleteText(start, end);
+
+    // Insert on the parent paragraph/list item at the text element's index
+    // (typical notes exports put each image on its own line).
+    if (blob) {
+      if (parent) {
+        insertInlineImage(parent, textIdx, blob);
+      } else {
+        body.appendImage(blob);
+      }
+    } else if (parent) {
+      insertPlainText(parent, textIdx, `[Image missing: ${basename}]`);
+    } else {
+      body.appendParagraph(`[Image missing: ${basename}]`);
+    }
+
+    // Search from the top again; offsets shifted after edits.
+    found = body.findText(pattern);
+  }
+}
+
+function insertInlineImage(parent, childIndex, blob) {
+  const type = parent.getType();
+  if (type === DocumentApp.ElementType.PARAGRAPH) {
+    parent.asParagraph().insertInlineImage(childIndex, blob);
+  } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+    parent.asListItem().insertInlineImage(childIndex, blob);
+  } else {
+    // Fallback: append to body after parent if possible.
+    const body = parent.getParent();
+    if (body && body.getType() === DocumentApp.ElementType.BODY_SECTION) {
+      const idx = body.getChildIndex(parent);
+      body.insertImage(idx + 1, blob);
+    }
+  }
+}
+
+function insertPlainText(parent, childIndex, text) {
+  const type = parent.getType();
+  if (type === DocumentApp.ElementType.PARAGRAPH) {
+    parent.asParagraph().insertText(childIndex, text);
+  } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+    parent.asListItem().insertText(childIndex, text);
+  }
 }
