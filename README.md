@@ -13,6 +13,7 @@ Each folder is a standalone script you can paste into a new Apps Script project 
 | [calendar-label-by-name](./calendar-label-by-name/) | Assign Calendar Labels on the primary calendar by matching event titles |
 | [meeting-notes-to-email-draft-in-word-format](./meeting-notes-to-email-draft-in-word-format/) | Export Gemini Meet notes to Word and draft/send email by Calendar attendee |
 | [md-to-doc-converter](./md-to-doc-converter/) | Convert Drive-folder Markdown (with `attachments/` images) into Google Docs |
+| [tag-aggregator](./tag-aggregator/) | Scan dated Docs in Drive folders for tags and append a tag→account summary Doc |
 
 ## Quick start
 
