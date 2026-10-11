@@ -19,6 +19,9 @@ const CONFIG = {
   // Do not commit a real ID if this repo is public.
   targetDocId: 'YOUR_TARGET_DOC_ID',
 
+  // true = wipe destination Doc body before writing; false = append to existing content.
+  clearDestination: true,
+
   // Heading prefix in the destination Doc (e.g. 'Q3 Review', '2026 Annual Review').
   reportTitle: 'Review',
 
@@ -128,8 +131,12 @@ function runTagAggregator() {
   console.log(`Accounts (${accountNames.length}): ${accountNames.join(', ')}`);
   if (CONFIG.DRY_RUN) {
     console.log('Dry-run: destination Doc will NOT be modified.');
+    if (CONFIG.clearDestination) {
+      console.log('Dry-run note: clearDestination is on — a live run would wipe the Doc first.');
+    }
   } else {
-    console.log(`Live: writing summary into Doc ${CONFIG.targetDocId}`);
+    const writeMode = CONFIG.clearDestination ? 'clear then write' : 'append';
+    console.log(`Live: ${writeMode} summary into Doc ${CONFIG.targetDocId}`);
   }
   console.log('---');
 
@@ -259,8 +266,13 @@ function runTagAggregator() {
   if (!CONFIG.DRY_RUN) {
     const destDoc = DocumentApp.openById(CONFIG.targetDocId);
     destBody = destDoc.getBody();
+    if (CONFIG.clearDestination) {
+      destBody.clear();
+      console.log('Cleared destination Doc body');
+    }
+    const headingPrefix = CONFIG.clearDestination ? '' : '\n';
     destBody.appendParagraph(
-      `\n${CONFIG.reportTitle}: ${CONFIG.startDate.toLocaleDateString()} to ${CONFIG.endDate.toLocaleDateString()}`
+      `${headingPrefix}${CONFIG.reportTitle}: ${CONFIG.startDate.toLocaleDateString()} to ${CONFIG.endDate.toLocaleDateString()}`
     ).setHeading(DocumentApp.ParagraphHeading.HEADING1);
   }
 
@@ -317,6 +329,8 @@ function runTagAggregator() {
   );
   if (CONFIG.DRY_RUN) {
     console.log('Dry-run complete — no changes written. Set CONFIG.DRY_RUN = false to write.');
+  } else if (CONFIG.clearDestination) {
+    console.log('Live run complete — destination Doc cleared and rewritten.');
   } else {
     console.log('Live run complete — summary appended to destination Doc.');
   }

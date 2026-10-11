@@ -1,7 +1,7 @@
 # Tag aggregator
 
 Scans Google Drive folders of dated Google Docs for configured tags, then
-appends a summary into a destination Doc — grouped by **tag**, then by
+writes a summary into a destination Doc — grouped by **tag**, then by
 **account/folder label**.
 
 Useful for quarterly or yearly rollups (or any date window) when notes are
@@ -13,7 +13,8 @@ tagged in-line (for example `#theme/wins`) and live in per-account folders.
 2. Keeps only files whose **name** starts with `YYYY-MM-DD` or `YYYY.MM.DD`
    and falls within `startDate`…`endDate` (inclusive, script-local calendar).
 3. Opens each in-range Doc and finds paragraphs containing any configured tag.
-4. Dry-run: logs hits only. Live mode: appends to `targetDocId`:
+4. Dry-run: logs hits only. Live mode: writes to `targetDocId`
+   (optionally clearing it first), then:
    - H1: `reportTitle` + date range
    - H2: tag display label
    - H3: account/folder label
@@ -51,14 +52,16 @@ Only Google Docs in that folder are scanned (not subfolders).
 6. Keep `DRY_RUN = true`, run `runTagAggregator`, review **Executions** / logs.
 7. Set `DRY_RUN = false` when the preview looks right, then run again.
 
-Live mode **appends** to the destination Doc (it does not clear prior runs).
+By default live mode **clears** the destination Doc body, then writes a fresh
+summary. Set `clearDestination: false` to append instead.
 
 ## Config reference
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `DRY_RUN` | `true` | `true` = log only; `false` = append summary to the Doc |
+| `DRY_RUN` | `true` | `true` = log only; `false` = write summary to the Doc |
 | `targetDocId` | placeholder | Destination Google Doc ID |
+| `clearDestination` | `true` | `true` = wipe Doc body before write; `false` = append |
 | `reportTitle` | `'Review'` | H1 prefix (e.g. `'Q3 Review'`, `'2026 Annual Review'`) |
 | `startDate` / `endDate` | example quarter | Inclusive filename-date window via `localDate(y, m, d)` |
 | `tags` | example map | Tag string → heading label in the output Doc |
@@ -85,7 +88,8 @@ Risks
 
 ## Notes
 
-- Prefer a dry-run first; live runs append another full summary each time.
+- Prefer a dry-run first. With `clearDestination: true`, a live run wipes the
+  destination Doc body before writing — keep that Doc dedicated to the summary.
 - Use `localDate(y, m, d)` for CONFIG dates. Do **not** use
   `new Date('YYYY-MM-DD')` — that is UTC midnight and can shift the day.
 - Filename dates and CONFIG dates are compared in the script timezone
