@@ -46,11 +46,28 @@ In the Apps Script UI: **Triggers** → add trigger → function `syncSharedEven
 | `LOOKBACK_DAYS` | How far back to maintain (default `0`) |
 | `SYNC_TAG` | Marker embedded in descriptions; leave as-is unless you know why |
 
+## One-off: wipe duplicate copies on a day
+
+If the sync somehow left many identical invites on the same day, use `Cleanup.gs`:
+
+1. Paste `Cleanup.gs` into the same Apps Script project (alongside `Code.gs`).
+2. Edit `CLEANUP_CONFIG` (`TARGET_DATE`, `EVENT_TITLE`; leave `DRY_RUN: true`).
+3. Run `deleteDuplicateInvitesOnDate`, review the log.
+4. Set `DRY_RUN: false` and run again to delete.
+
+| Key | Meaning |
+|-----|---------|
+| `DRY_RUN` | `true` = log only; `false` = delete |
+| `TARGET_DATE` | Day to scan (`YYYY-MM-DD`, script timezone) |
+| `EVENT_TITLE` | Title to match on the primary calendar |
+| `MATCH_MODE` | `"exact"` (default, safer) or `"includes"` |
+
 ## Files
 
 | File | Role |
 |------|------|
 | `Code.gs` | Script logic (`syncSharedEvents`) |
+| `Cleanup.gs` | One-off `deleteDuplicateInvitesOnDate` for same-day duplicates |
 | `appsscript.js` | Project manifest (timezone, OAuth scopes) |
 
 ## Notes
@@ -58,3 +75,4 @@ In the Apps Script UI: **Triggers** → add trigger → function `syncSharedEven
 - Recurring instances are tracked per occurrence (`eventId` + start timestamp).
 - Location and title/time updates propagate; description on the primary event is rewritten with the sync tag on create.
 - All-day events are handled separately from timed events.
+- Cleanup only scans the primary calendar for one local calendar day.
