@@ -1,65 +1,5 @@
 // ==========================================
-// 1. CONFIGURATION SETTINGS (Edit these!)
-// ==========================================
-
-/**
- * Calendar date in the script timezone (America/New_York). Months are 1–12.
- * Use this for CONFIG dates — do not use new Date('YYYY-MM-DD') (that is UTC).
- * Filenames are compared the same way: "2026-07-01 Notes" means July 1 locally.
- */
-function localDate(year, month, day) {
-  return new Date(year, month - 1, day);
-}
-
-const CONFIG = {
-  // true = scan sources and log matches only; false = also write into targetDocId
-  DRY_RUN: true,
-
-  // Destination Google Doc ID (from the URL: .../document/d/<ID>/edit).
-  // Do not commit a real ID if this repo is public.
-  targetDocId: 'YOUR_TARGET_DOC_ID',
-
-  // true = wipe destination Doc body before writing; false = append to existing content.
-  clearDestination: true,
-
-  // Heading prefix in the destination Doc (e.g. 'Q3 Review', '2026 Annual Review').
-  reportTitle: 'Review',
-
-  // Inclusive range by filename date (YYYY-MM-DD or YYYY.MM.DD). No UTC math.
-  // Applies to Docs discovered via folders. Explicit documents: entries always scan.
-  startDate: localDate(2026, 7, 1),
-  endDate: localDate(2026, 9, 30),
-
-  // Tag → display label used as an H2 in the destination Doc.
-  // Keys are the literal substrings matched in source Doc paragraphs.
-  tags: {
-    '#theme/wins': 'Wins',
-    '#theme/risks': 'Risks',
-    '#theme/feedback': 'Feedback'
-  },
-
-  // Group label → Drive folder ID containing Google Docs to scan.
-  // Folder ID is the .../folders/<ID> segment of the Drive URL.
-  // Do not commit real folder IDs if this repo is public.
-  folders: {
-    'Example Account': 'YOUR_FOLDER_ID',
-    'Another Account': 'YOUR_FOLDER_ID'
-  },
-
-  // Optional: extra Google Doc IDs to scan (in addition to folders).
-  // Keys are H3 group labels — reuse a folders key to merge under that account,
-  // or use a new label for a standalone section.
-  // Values: one Doc ID string, or an array of Doc IDs.
-  // These are always scanned (no filename-date filter). Leave {} if unused.
-  // Do not commit real Doc IDs if this repo is public.
-  documents: {
-    // 'Example Account': 'YOUR_DOC_ID',
-    // 'Shared notes': ['YOUR_DOC_ID_1', 'YOUR_DOC_ID_2']
-  }
-};
-
-// ==========================================
-// 2. IMPLEMENTATION
+// Tag aggregator — engine (see Config.gs)
 // ==========================================
 
 /**
@@ -172,16 +112,19 @@ function collectTagsFromFile(file, groupLabel, tagKeys, results, perTagCounts) {
  *
  * Folder Docs: filename must start with YYYY-MM-DD or YYYY.MM.DD in range.
  * Explicit documents: always scanned (no date filter).
+ *
+ * @param {string=} periodId — PERIODS key; defaults to ACTIVE_PERIOD from Config.gs
  */
-function runTagAggregator() {
+function runTagAggregator(periodId) {
+  const CONFIG = buildConfig(periodId);
   const mode = CONFIG.DRY_RUN ? 'DRY RUN' : 'LIVE';
   const folderLabels = Object.keys(CONFIG.folders || {});
   const documentEntries = CONFIG.documents || {};
   const documentLabels = Object.keys(documentEntries);
   const groupLabels = Array.from(new Set(folderLabels.concat(documentLabels)));
-  const tagKeys = Object.keys(CONFIG.tags);
+  const tagKeys = Object.keys(CONFIG.tags || {});
 
-  console.log(`=== tag-aggregator [${mode}] ===`);
+  console.log(`=== tag-aggregator [${mode}] period=${CONFIG.periodId} ===`);
   console.log(
     `Date range: ${formatLocalYmd(CONFIG.startDate)} → ` +
     `${formatLocalYmd(CONFIG.endDate)} (folders only; explicit documents always scanned)`
@@ -437,7 +380,7 @@ function runTagAggregator() {
     `(folders in-range + explicit) matchingLines=${totals.matchLines}`
   );
   if (CONFIG.DRY_RUN) {
-    console.log('Dry-run complete — no changes written. Set CONFIG.DRY_RUN = false to write.');
+    console.log('Dry-run complete — no changes written. Set SHARED.DRY_RUN = false to write.');
   } else if (CONFIG.clearDestination) {
     console.log('Live run complete — destination Doc cleared and rewritten.');
   } else {
