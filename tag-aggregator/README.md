@@ -18,13 +18,15 @@ tags and folders.
 3. Keeps only folder files whose **name** starts with `YYYY-MM-DD` or
    `YYYY.MM.DD` and falls within the period’s `startDate`…`endDate`.
 4. Also opens every Doc listed in that period’s `documents` (no date filter).
-5. Finds paragraphs containing any configured tag.
+5. Finds paragraphs containing any configured tag. If the hit is a list bullet,
+   nested sub-bullets under it (any depth) are included too.
 6. Dry-run: logs hits only. Live mode: writes to the period’s `targetDocId`
    (optionally clearing it first), then:
    - H1: `reportTitle` + date range
    - H2: tag display label
    - H3: group label (folder key and/or documents key)
-   - Bullets: linked source Doc name — snippet with tags stripped
+   - Bullets: linked source Doc name — snippet with tags stripped; nested
+     sub-bullets preserved under that item
 
 ## Expected inputs
 
@@ -35,12 +37,22 @@ tags and folders.
 2026.08.01 Weekly check-in
 ```
 
-**Body text** includes tags as plain substrings (anywhere in a paragraph):
+**Body text** includes tags as plain substrings (anywhere in a paragraph or bullet):
 
 ```
 Shipped the onboarding playbook #theme/wins
 Customer asked for SSO timeline #theme/risks
+
+• Delivered training #theme/wins
+    • 12 attendees
+    • Follow-up deck shared
+        • Link posted in Slack
 ```
+
+When the tagged line is a bullet, all deeper nested bullets under it are copied
+into the summary (tags stripped). A sub-bullet that was already pulled in under
+the same tag is not emitted again as its own hit; a different tag on a
+sub-bullet can still match separately.
 
 **Sources**
 
@@ -176,6 +188,9 @@ Risks
   timezone (`America/New_York` in the manifest).
 - Explicit `documents` entries are always scanned, even without a dated filename.
 - A paragraph that contains several configured tags is recorded under each
-  matching tag (same snippet, tags stripped).
+  matching tag (same block / sub-bullets, tags stripped).
+- Sub-bullet capture only applies to real Google Docs list items (same list id,
+  deeper nesting than the tagged bullet). Plain indented paragraphs are not treated
+  as nested bullets.
 - Only the top level of each folder is scanned; nested folders are ignored.
 - Do not commit real `targetDocId`, folder IDs, or Doc IDs if this repo is public.

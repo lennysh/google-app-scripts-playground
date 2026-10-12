@@ -45,7 +45,7 @@ function stripTagsFromText(text, tagKeys) {
 }
 
 /**
- * Append a bullet whose source doc name is a hyperlink, followed by the snippet.
+ * Append a top-level bullet whose source doc name is a hyperlink, followed by text.
  * Format: "<Doc Name> — <snippet>"
  */
 function appendLinkedListItem(body, fileName, fileUrl, snippet) {
@@ -59,6 +59,27 @@ function appendLinkedListItem(body, fileName, fileUrl, snippet) {
   return item;
 }
 
+/**
+ * Write one match: linked parent bullet, then any nested sub-bullets (relative levels).
+ * item.lines = [{ text, level }, ...] where level 0 is the tagged line.
+ */
+function appendMatchItem(body, item) {
+  const lines = item.lines && item.lines.length
+    ? item.lines
+    : [{ text: item.snippet || '', level: 0 }];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i === 0 && line.level === 0) {
+      appendLinkedListItem(body, item.fileName, item.fileUrl, line.text);
+    } else {
+      body.appendListItem(line.text || '')
+        .setGlyphType(DocumentApp.GlyphType.BULLET)
+        .setNestingLevel(line.level);
+    }
+  }
+}
+
 /** Normalize documents config values to an array of Doc ID strings. */
 function normalizeDocIds(value) {
   if (value == null || value === '') return [];
@@ -68,8 +89,52 @@ function normalizeDocIds(value) {
   return [String(value)];
 }
 
+/** True when a Body.getParagraphs() entry is a list item (bullet / numbered). */
+function isListItemParagraph(paragraph) {
+  return paragraph.getType() === DocumentApp.ElementType.LIST_ITEM;
+}
+
+/**
+ * If startIndex is a list item, collect it plus all deeper nested siblings in the
+ * same list (any depth). Non-list paragraphs return only themselves.
+ *
+ * @return {{ lines: Array<{text: string, level: number}>, descendantIndices: number[] }}
+ */
+function expandTaggedBlock(paragraphs, startIndex, tagKeys) {
+  const start = paragraphs[startIndex];
+  const startText = stripTagsFromText(start.getText(), tagKeys);
+  const lines = [{ text: startText, level: 0 }];
+  const descendantIndices = [];
+
+  if (!isListItemParagraph(start)) {
+    return { lines: lines, descendantIndices: descendantIndices };
+  }
+
+  const baseLevel = start.getNestingLevel();
+  const listId = start.getListId();
+
+  for (let j = startIndex + 1; j < paragraphs.length; j++) {
+    const next = paragraphs[j];
+    if (!isListItemParagraph(next)) break;
+    if (next.getListId() !== listId) break;
+
+    const level = next.getNestingLevel();
+    if (level <= baseLevel) break;
+
+    descendantIndices.push(j);
+    lines.push({
+      text: stripTagsFromText(next.getText(), tagKeys),
+      level: level - baseLevel
+    });
+  }
+
+  return { lines: lines, descendantIndices: descendantIndices };
+}
+
 /**
  * Open a Google Doc by ID/file and record matching tag lines under groupLabel.
+ * Tagged list items also capture nested sub-bullets (any depth). Descendants
+ * already pulled in under the same tag are not emitted again as separate hits.
  * Returns { hitsInFile, matchLines } counts for this file.
  */
 function collectTagsFromFile(file, groupLabel, tagKeys, results, perTagCounts) {
@@ -80,25 +145,37 @@ function collectTagsFromFile(file, groupLabel, tagKeys, results, perTagCounts) {
   let hitsInFile = 0;
   let matchLines = 0;
 
-  for (let p of paragraphs) {
-    const text = p.getText();
+  // Per-tag skip sets so a sub-bullet tagged differently can still match elsewhere
+  const skippedByTag = {};
+  tagKeys.forEach(tag => {
+    skippedByTag[tag] = new Set();
+  });
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const text = paragraphs[i].getText();
 
     for (let tag of tagKeys) {
-      if (text.includes(tag)) {
-        const snippet = stripTagsFromText(text, tagKeys);
-        results[tag][groupLabel].push({
-          fileName: fileName,
-          fileUrl: fileUrl,
-          snippet: snippet
-        });
-        hitsInFile++;
-        matchLines++;
-        if (perTagCounts) perTagCounts[tag]++;
-        console.log(`  HIT   tag=${tag}  file="${fileName}"`);
-        console.log(
-          `        ${snippet.length > 200 ? snippet.slice(0, 200) + '…' : snippet || '(empty after stripping tags)'}`
-        );
-      }
+      if (skippedByTag[tag].has(i)) continue;
+      if (!text.includes(tag)) continue;
+
+      const expanded = expandTaggedBlock(paragraphs, i, tagKeys);
+      expanded.descendantIndices.forEach(idx => skippedByTag[tag].add(idx));
+
+      results[tag][groupLabel].push({
+        fileName: fileName,
+        fileUrl: fileUrl,
+        lines: expanded.lines
+      });
+      hitsInFile++;
+      matchLines++;
+      if (perTagCounts) perTagCounts[tag]++;
+
+      const parent = expanded.lines[0] ? expanded.lines[0].text : '';
+      const subCount = Math.max(0, expanded.lines.length - 1);
+      console.log(`  HIT   tag=${tag}  file="${fileName}"  subbullets=${subCount}`);
+      console.log(
+        `        ${parent.length > 200 ? parent.slice(0, 200) + '…' : parent || '(empty after stripping tags)'}`
+      );
     }
   }
 
@@ -147,7 +224,7 @@ function runTagAggregator(periodId) {
   }
   console.log('---');
 
-  // results[tag][groupLabel] = [{ fileName, fileUrl, snippet }, ...]
+  // results[tag][groupLabel] = [{ fileName, fileUrl, lines: [{text, level}] }, ...]
   const results = {};
   tagKeys.forEach(tag => {
     results[tag] = {};
@@ -359,7 +436,7 @@ function runTagAggregator(periodId) {
     for (const label of labelsWithItems) {
       destBody.appendParagraph(label).setHeading(DocumentApp.ParagraphHeading.HEADING3);
       for (const item of results[tag][label]) {
-        appendLinkedListItem(destBody, item.fileName, item.fileUrl, item.snippet);
+        appendMatchItem(destBody, item);
       }
     }
   }
