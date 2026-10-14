@@ -27,7 +27,10 @@ const CONFIG = {
   LOOKBACK_DAYS: 0,   // Days in the past to maintain
   // Marker embedded in primary event descriptions. Do not change once events exist.
   SYNC_TAG_PREFIX: "[SyncedID:",
-  SYNC_TAG_SUFFIX: "]"
+  SYNC_TAG_SUFFIX: "]",
+  // Meet join details are copied into the description (CalendarApp cannot attach Meet).
+  MEET_BLOCK_START: "[MeetSync]",
+  MEET_BLOCK_END: "[/MeetSync]"
 };
 
 function syncSharedEvents() {
@@ -137,8 +140,9 @@ function syncSharedEventsLocked_() {
       const isAllDay = sourceEvent.isAllDayEvent();
       const location = sourceEvent.getLocation() || "";
       const description = sourceEvent.getDescription() || "";
+      const meetBlock = buildMeetBlock_(target.calendarId, sourceEvent);
       const fp = eventFingerprint_(title, startTime, endTime);
-      const taggedDesc = buildTaggedDescription_(description, uniqueSourceId);
+      const taggedDesc = buildTaggedDescription_(description, uniqueSourceId, meetBlock);
 
       let existingEvent = bySyncId.get(uniqueSourceId) || null;
 
@@ -162,18 +166,24 @@ function syncSharedEventsLocked_() {
       }
 
       if (existingEvent) {
+        const currentDesc = existingEvent.getDescription() || "";
         const needsUpdate =
           existingEvent.getTitle() !== title ||
           existingEvent.getStartTime().getTime() !== startTime.getTime() ||
           existingEvent.getEndTime().getTime() !== endTime.getTime() ||
-          existingEvent.getLocation() !== location;
+          existingEvent.getLocation() !== location ||
+          currentDesc !== taggedDesc;
 
         if (needsUpdate) {
           if (CONFIG.DRY_RUN) {
-            console.log(`[DRY RUN] Would UPDATE: "${title}" at ${startTime}`);
+            console.log(
+              `[DRY RUN] Would UPDATE: "${title}" at ${startTime}` +
+                (meetBlock ? " (incl. Meet link in description)" : "")
+            );
           } else {
             existingEvent.setTitle(title);
             existingEvent.setLocation(location);
+            existingEvent.setDescription(taggedDesc);
             if (isAllDay) {
               existingEvent.setAllDayDates(startTime, endTime);
             } else {
@@ -189,7 +199,10 @@ function syncSharedEventsLocked_() {
 
       // CREATE only when no sync-id match and no title+time match.
       if (CONFIG.DRY_RUN) {
-        console.log(`[DRY RUN] Would CREATE: "${title}" at ${startTime}`);
+        console.log(
+          `[DRY RUN] Would CREATE: "${title}" at ${startTime}` +
+            (meetBlock ? " (incl. Meet link in description)" : "")
+        );
       } else {
         let created;
         if (isAllDay) {
@@ -203,7 +216,10 @@ function syncSharedEventsLocked_() {
             location: location
           });
         }
-        console.log(`[LIVE] Created: "${title}" at ${startTime}`);
+        console.log(
+          `[LIVE] Created: "${title}" at ${startTime}` +
+            (meetBlock ? " (Meet link in description)" : "")
+        );
         bySyncId.set(uniqueSourceId, created);
         byFingerprint.set(fp, created);
       }
@@ -240,16 +256,126 @@ function extractSyncId_(description) {
   return match ? match[1].trim() : "";
 }
 
-function buildTaggedDescription_(sourceDescription, uniqueSourceId) {
-  const body = String(sourceDescription || "").replace(
+function buildTaggedDescription_(sourceDescription, uniqueSourceId, meetBlock) {
+  let body = String(sourceDescription || "");
+  // Drop prior sync / meet markers so rewrites stay idempotent.
+  body = body.replace(
     new RegExp(
       `${escapeRegExp_(CONFIG.SYNC_TAG_PREFIX)}\\s*[^\\]]*\\s*${escapeRegExp_(CONFIG.SYNC_TAG_SUFFIX)}`,
       "g"
     ),
     ""
-  ).trim();
-  const tag = `${CONFIG.SYNC_TAG_PREFIX} ${uniqueSourceId}${CONFIG.SYNC_TAG_SUFFIX}`;
-  return body ? `${body}\n\n${tag}` : tag;
+  );
+  body = body.replace(
+    new RegExp(
+      `${escapeRegExp_(CONFIG.MEET_BLOCK_START)}[\\s\\S]*?${escapeRegExp_(CONFIG.MEET_BLOCK_END)}`,
+      "g"
+    ),
+    ""
+  );
+  body = body.trim();
+
+  const parts = [];
+  if (body) {
+    parts.push(body);
+  }
+  if (meetBlock) {
+    parts.push(
+      `${CONFIG.MEET_BLOCK_START}\n${meetBlock}\n${CONFIG.MEET_BLOCK_END}`
+    );
+  }
+  parts.push(`${CONFIG.SYNC_TAG_PREFIX} ${uniqueSourceId}${CONFIG.SYNC_TAG_SUFFIX}`);
+  return parts.join("\n\n");
+}
+
+/**
+ * Pull Google Meet / conference join info via Advanced Calendar service and
+ * format it for the primary event description. Returns "" when absent.
+ * Requires Advanced Calendar API (see appsscript.js enabledAdvancedServices).
+ */
+function buildMeetBlock_(calendarId, sourceEvent) {
+  const apiEvent = fetchSourceApiEvent_(calendarId, sourceEvent);
+  if (!apiEvent) {
+    return "";
+  }
+
+  const lines = [];
+  const entryPoints =
+    (apiEvent.conferenceData && apiEvent.conferenceData.entryPoints) || [];
+
+  let videoUri = apiEvent.hangoutLink || "";
+  if (!videoUri) {
+    const video = entryPoints.find(ep => ep && ep.entryPointType === "video" && ep.uri);
+    if (video) {
+      videoUri = video.uri;
+    }
+  }
+  if (videoUri) {
+    lines.push(`Google Meet: ${videoUri}`);
+  }
+
+  entryPoints.forEach(ep => {
+    if (!ep || ep.entryPointType !== "phone" || !ep.uri) {
+      return;
+    }
+    let phone = `Phone: ${String(ep.uri).replace(/^tel:/i, "")}`;
+    if (ep.pin) {
+      phone += ` PIN: ${ep.pin}`;
+    }
+    lines.push(phone);
+  });
+
+  return lines.join("\n");
+}
+
+function fetchSourceApiEvent_(calendarId, sourceEvent) {
+  if (typeof Calendar === "undefined" || !Calendar.Events) {
+    console.warn(
+      "Advanced Calendar service (Calendar) is not enabled; Meet links will not be copied. " +
+        "Enable it under Services, or apply appsscript.js dependencies.enabledAdvancedServices."
+    );
+    return null;
+  }
+
+  const rawId = String(sourceEvent.getId() || "");
+  const eventId = rawId.replace(/@.*$/, "");
+  if (!eventId) {
+    return null;
+  }
+
+  try {
+    return Calendar.Events.get(calendarId, eventId);
+  } catch (err) {
+    // Recurring instances sometimes need a timed list match.
+    try {
+      const start = sourceEvent.getStartTime();
+      const end = sourceEvent.getEndTime();
+      const list = Calendar.Events.list(calendarId, {
+        timeMin: new Date(start.getTime() - 60 * 1000).toISOString(),
+        timeMax: new Date(end.getTime() + 60 * 1000).toISOString(),
+        singleEvents: true,
+        maxResults: 25
+      });
+      const items = (list && list.items) || [];
+      const title = sourceEvent.getTitle();
+      const match = items.find(item => {
+        if (!item || item.summary !== title) {
+          return false;
+        }
+        const itemStartRaw = item.start && (item.start.dateTime || item.start.date);
+        if (!itemStartRaw) {
+          return false;
+        }
+        return Math.abs(new Date(itemStartRaw).getTime() - start.getTime()) < 2000;
+      });
+      return match || null;
+    } catch (fallbackErr) {
+      console.warn(
+        `Meet lookup failed for "${sourceEvent.getTitle()}": ${err}; fallback: ${fallbackErr}`
+      );
+      return null;
+    }
+  }
 }
 
 function eventFingerprint_(title, startTime, endTime) {

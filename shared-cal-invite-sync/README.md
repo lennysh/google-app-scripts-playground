@@ -18,6 +18,7 @@ Useful when you want shared-team events on your personal agenda without acceptin
 
 1. Create a new Apps Script project and paste `Code.gs`.
 2. Apply the manifest from `appsscript.js` (as `appsscript.json`). Required scope: Calendar.
+   Also enable the **Advanced Calendar API** service (`Calendar` v3) — needed to read Google Meet links (Editor → Services, or via `dependencies.enabledAdvancedServices` in the manifest).
 3. Subscribe to each source calendar in Google Calendar (the script runs as you; you must already have access).
 4. Edit `CONFIG.TARGETS`:
 
@@ -88,7 +89,8 @@ After cleaning with `Cleanup.gs`, redeploy this `Code.gs` before leaving a live 
 ## Notes
 
 - Recurring instances are tracked per occurrence (`eventId` + start timestamp).
-- Location and title/time updates propagate; description on the primary event is rewritten with the sync tag on create/adopt.
+- Location, title/time, and description (including Meet) updates propagate; the primary description is rewritten with Meet details + `[SyncedID: …]` on create/adopt/update.
+- **Google Meet:** CalendarApp cannot attach a Meet conference to the copy. The script reads `hangoutLink` / `conferenceData` via the Advanced Calendar API and inserts a clickable join block (and phone PIN when present) into the description between `[MeetSync]` … `[/MeetSync]`. You join the **same** meeting as the source event; the primary copy will not show Calendar’s native “Join with Google Meet” button.
 - All-day events are handled separately from timed events.
 - Cleanup only scans the primary calendar for one local calendar day.
 - Prefer a modest trigger interval (e.g. hourly), not every minute.
